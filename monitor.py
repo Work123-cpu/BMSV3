@@ -2,7 +2,7 @@ import os
 import json
 import time
 import random
-from datetime import datetime, timedelta
+from datetime import datetime
 from curl_cffi import requests
 from bs4 import BeautifulSoup
 
@@ -32,12 +32,15 @@ def send_telegram_message(message: str) -> dict:
         print(f"[!] Telegram send error: {e}")
         return {}
 
-def get_telegram_updates() -> list:
+def get_telegram_updates(offset=None) -> list:
     if not TELEGRAM_TOKEN:
         return []
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates"
+    params = {"timeout": 5}
+    if offset:
+        params["offset"] = offset
     try:
-        res = requests.get(url, timeout=10)
+        res = requests.get(url, params=params, timeout=10)
         if res.status_code == 200:
             return res.json().get("result", [])
     except Exception as e:
@@ -47,7 +50,7 @@ def get_telegram_updates() -> list:
 # --- DATABASE / STATE MANAGEMENT (Telegram Pinned Message) ---
 
 def get_db_state() -> dict:
-    """Retrieves targets and state from the pinned message."""
+    """Retrieves targets, wizard state, and last_update_id from pinned message."""
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getChat"
     default_state = {
         "targets": [
@@ -56,16 +59,11 @@ def get_db_state() -> dict:
                 "date": "2026-07-24",
                 "url": "https://in.bookmyshow.com/buytickets/broadway-cinemas-coimbatore/cinema-coim-BWCC-MT/20260724",
                 "keyword": "Jana Nayagan"
-            },
-            {
-                "movie": "The Odyssey (IMAX)",
-                "date": "2026-07-30/31",
-                "url": "https://in.bookmyshow.com/buytickets/broadway-cinemas-coimbatore/cinema-coim-BWCC-MT/20260730",
-                "keyword": "Odyssey"
             }
         ],
         "wizard_step": None,
-        "temp_data": {}
+        "temp_data": {},
+        "last_update_id": 0
     }
     
     try:
@@ -95,7 +93,9 @@ def save_db_state(db: dict) -> None:
 # --- INTERACTIVE WIZARD & COMMANDS ---
 
 def process_telegram_commands(db: dict) -> dict:
-    updates = get_telegram_updates()
+    last_id = db.get("last_update_id", 0)
+    updates = get_telegram_updates(offset=last_id + 1 if last_id else None)
+    
     if not updates:
         return db
 
@@ -105,51 +105,49 @@ def process_telegram_commands(db: dict) -> dict:
     targets = db.get("targets", [])
 
     for item in updates:
+        update_id = item.get("update_id")
+        if update_id:
+            db["last_update_id"] = max(db.get("last_update_id", 0), update_id)
+            updated = True
+
         message = item.get("message", {})
         text = message.get("text", "").strip()
 
         if not text:
             continue
 
-        # Cancel flow anytime
+        # Cancel command
         if text.lower() == "/cancel":
             step = None
             temp = {}
             send_telegram_message("🚫 Step-by-step process cancelled.")
-            updated = True
             continue
 
-        # 1. Start Step-by-Step Addition
+        # Step 0: Initiate /add
         if text.lower() == "/add" and step is None:
-            # Check if one-line add was attempted
             step = "WAITING_MOVIE"
             temp = {}
-            send_telegram_message("🎬 *Step 1/4:* Please reply with the *Movie Name* (e.g., `Coolie`):")
-            updated = True
+            send_telegram_message("🎬 *Step 1/4:* Reply with the *Movie Name* (e.g., `Coolie`):")
             continue
 
-        # 2. Wizard Flow Logic
+        # Wizard Steps
         if step == "WAITING_MOVIE":
             temp["movie"] = text
             step = "WAITING_DATE"
-            send_telegram_message("📅 *Step 2/4:* Please reply with the *Show Date* (e.g., `2026-08-10`):")
-            updated = True
+            send_telegram_message("📅 *Step 2/4:* Reply with the *Show Date* (e.g., `2026-08-10`):")
             continue
 
         elif step == "WAITING_DATE":
             temp["date"] = text
             step = "WAITING_URL"
-            send_telegram_message("🔗 *Step 3/4:* Please reply with the *BookMyShow Ticket URL*:")
-            updated = True
+            send_telegram_message("🔗 *Step 3/4:* Reply with the *BookMyShow Ticket URL*:")
             continue
 
         elif step == "WAITING_URL":
-            # Strip markdown links if auto-formatted by Telegram
             clean_url = text.replace("[", "").replace("]", "").split("(")[-1].replace(")", "")
             temp["url"] = clean_url
             step = "WAITING_KEYWORD"
-            send_telegram_message("🔑 *Step 4/4:* Please reply with the *Search Keyword* (e.g., `Coolie`):")
-            updated = True
+            send_telegram_message("🔑 *Step 4/4:* Reply with the *Search Keyword* (e.g., `Coolie`):")
             continue
 
         elif step == "WAITING_KEYWORD":
@@ -158,10 +156,9 @@ def process_telegram_commands(db: dict) -> dict:
             send_telegram_message(f"✅ *Success!* Added *{temp['movie']}* to your watchlist!")
             step = None
             temp = {}
-            updated = True
             continue
 
-        # 3. Handle /list
+        # Handle /list
         if text.lower() == "/list":
             if not targets:
                 send_telegram_message("📁 *Watchlist is empty.*")
@@ -171,14 +168,13 @@ def process_telegram_commands(db: dict) -> dict:
                     msg += f"{idx}. *{t['movie']}* ({t['date']})\n🔗 `{t['url']}`\n\n"
                 send_telegram_message(msg)
 
-        # 4. Handle /del
+        # Handle /del
         elif text.lower().startswith("/del "):
             movie_to_del = text[5:].strip().lower()
             initial_count = len(targets)
             targets = [t for t in targets if t["movie"].lower() != movie_to_del]
             if len(targets) < initial_count:
                 send_telegram_message(f"🗑️ Removed *{movie_to_del}* from watchlist!")
-                updated = True
             else:
                 send_telegram_message(f"⚠️ Movie *{movie_to_del}* not found.")
 
@@ -201,9 +197,6 @@ def is_booking_available(html_content: str) -> bool:
     return len(showtimes) > 0
 
 def check_availability() -> None:
-    start_time_utc = datetime.utcnow()
-
-    # Load database & process step-by-step messages
     db = get_db_state()
     db = process_telegram_commands(db)
 
@@ -224,7 +217,7 @@ def check_availability() -> None:
     }
 
     for target in targets:
-        time.sleep(random.uniform(2, 4))
+        time.sleep(random.uniform(1, 3))
         try:
             response = requests.get(
                 target["url"],
