@@ -16,56 +16,62 @@ TARGETS = [
     {"movie": "The Odyssey (IMAX)", "date": "2026-07-31", "url": "https://in.bookmyshow.com/cinemas/coimbatore/broadway-cinemas-coimbatore/buytickets/BWCB/20260731", "keyword": "Odyssey"}
 ]
 
-def check_secrets():
-    missing = []
-    if not TELEGRAM_TOKEN: missing.append("TELEGRAM_TOKEN")
-    if not TELEGRAM_CHAT_ID: missing.append("TELEGRAM_CHAT_ID")
-    if not PROXY_URL: missing.append("PROXY_URL")
-    
-    if missing:
-        print(f"[!] Critical Error: Missing secrets: {', '.join(missing)}")
-        return False
-    return True
-
 def send_telegram_message(message: str):
-    # Added "Proxy: Active" to the start of every message
-    status_header = "✅ *Proxy: Active*\n" + "-"*15 + "\n"
-    final_message = status_header + message
-    
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN.strip()}/sendMessage"
-    payload = {"chat_id": str(TELEGRAM_CHAT_ID).strip(), "text": final_message, "parse_mode": "Markdown", "disable_web_page_preview": True}
+    payload = {
+        "chat_id": str(TELEGRAM_CHAT_ID).strip(), 
+        "text": f"✅ *Proxy: Active*\n{'-'*15}\n{message}", 
+        "parse_mode": "Markdown", 
+        "disable_web_page_preview": True
+    }
     try:
         requests.post(url, json=payload, timeout=10)
     except Exception as e:
-        print(f"[!] Telegram send error: {e}")
+        print(f"[!] Critical: Could not send Telegram message: {e}")
 
 def is_specific_movie_available(html_content, keyword):
+    """Checks for showtime data specifically within the movie container."""
     soup = BeautifulSoup(html_content, "html.parser")
-    showtimes = soup.find_all(class_=lambda c: c and any(t in c.lower() for t in ["showtime", "show-time", "session-time", "showtime-pill"]))
-    return len(showtimes) > 0 and keyword.lower() in soup.get_text().lower()
+    # BookMyShow pages are dynamic; checking for the presence of the keyword in the title/showtime containers
+    page_text = soup.get_text().lower()
+    # If the page contains the movie keyword AND elements that look like showtimes
+    if keyword.lower() in page_text:
+        # Check for presence of showtime classes or time tags
+        showtimes = soup.find_all(['div', 'a'], class_=lambda c: c and 'showtime' in c.lower())
+        return len(showtimes) > 0
+    return False
 
 def run_check():
-    if not check_secrets():
+    if not all([TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, PROXY_URL]):
+        print("[!] Missing environment variables.")
         return
     
-    print(f"[DEBUG] Starting check for {len(TARGETS)} targets.") # ADD THIS LINE
-
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124.0.0.0 Safari/537.36"}
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"}
     proxies = {"http": PROXY_URL, "https": PROXY_URL}
     
     for target in TARGETS:
-        time.sleep(random.uniform(2, 5))
+        time.sleep(random.uniform(5, 10)) # Increased sleep to be safer for proxy
         try:
-            resp = cffi_requests.get(target["url"], headers=headers, impersonate="chrome124", proxies=proxies, allow_redirects=False, timeout=20)
+            resp = cffi_requests.get(
+                target["url"], 
+                headers=headers, 
+                impersonate="chrome124", 
+                proxies=proxies, 
+                timeout=30
+            )
             
-            if resp.status_code in [301, 302]:
-                send_telegram_message(f"🔍 *{target['movie']}* ({target['date']}) — Date NOT released by BMS yet.")
-            elif resp.status_code == 200 and is_specific_movie_available(resp.text, target["keyword"]):
-                send_telegram_message(f"🚨 *BOOKINGS OPEN!* 🚨\n\n*Movie:* {target['movie']}\n*Date:* {target['date']}\n👉 [Book Now]({target['url']})")
+            if resp.status_code == 200:
+                if is_specific_movie_available(resp.text, target["keyword"]):
+                    send_telegram_message(f"🚨 *BOOKINGS OPEN!* 🚨\n\n*Movie:* {target['movie']}\n*Date:* {target['date']}\n👉 [Book Now]({target['url']})")
+                else:
+                    print(f"[DEBUG] Page loaded for {target['movie']}, but no showtimes found.")
             else:
-                send_telegram_message(f"🔍 *{target['movie']}* ({target['date']}) — Page live, but {target['movie']} showtimes not added yet.")
+                print(f"[DEBUG] {target['movie']} returned status code: {resp.status_code}")
+                
         except Exception as e:
-            send_telegram_message(f"⚠️ *Error checking {target['movie']}:* {e}")
+            # This will now alert you if the proxy is blocked or the request fails
+            error_msg = f"⚠️ *Error checking {target['movie']}:*\n`{str(e)}`"
+            send_telegram_message(error_msg)
 
 if __name__ == "__main__":
     run_check()
