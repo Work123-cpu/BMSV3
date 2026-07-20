@@ -1,8 +1,9 @@
+name: BookMyShow Ticket Monitor
+
 on:
   schedule:
-    # This runs the job every 10 minutes
     - cron: '*/10 * * * *'
-  workflow_dispatch: # Allows you to run it manually for testing
+  workflow_dispatch:
 
 jobs:
   check-tickets:
@@ -12,9 +13,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - run: pip install -r requirements.txt
-      - run: python monitor.py
+      - run: pip install requests curl_cffi beautifulsoup4
+      - name: Run Check
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           PROXY_URL: ${{ secrets.PROXY_URL }}
+        run: python monitor.py
