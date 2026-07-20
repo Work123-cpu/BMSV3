@@ -59,21 +59,38 @@ def send_telegram_message(message: str) -> dict:
         print(f"[!] Telegram send error: {e}")
         return {}
 
-def get_telegram_updates(offset: int = None) -> list:
-    """Polls Telegram for incoming slash commands (e.g., /check)."""
+def get_telegram_updates(offset: int = None) -> tuple[list, int]:
+    """Polls Telegram for incoming commands and returns updates with the next offset."""
     if not TELEGRAM_TOKEN:
-        return []
+        return [], offset
+
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN.strip()}/getUpdates"
-    params = {"timeout": 2}
-    if offset:
+    params = {"timeout": 1, "limit": 100}
+    if offset is not None:
         params["offset"] = offset
+
     try:
         res = requests.get(url, params=params, timeout=5)
         if res.status_code == 200:
-            return res.json().get("result", [])
+            updates = res.json().get("result", [])
+            if updates:
+                # Calculate next offset to mark fetched updates as read
+                new_offset = updates[-1]["update_id"] + 1
+                return updates, new_offset
     except Exception:
         pass
-    return []
+
+    return [], offset
+
+def flush_old_updates() -> int:
+    """Clears pending messages from queue on startup to prevent infinite loops."""
+    print("[+] Flushing old Telegram updates...")
+    updates, next_offset = get_telegram_updates(offset=-1)
+    if updates:
+        # Requesting next_offset acknowledges and clears all previous updates
+        get_telegram_updates(offset=next_offset)
+        print(f"[+] Cleared {len(updates)} pending update(s).")
+    return next_offset
 
 # --- BOOKMYSHOW SCRAPING & CHECKING LOGIC ---
 
@@ -84,7 +101,6 @@ def is_specific_movie_available(html_content: str, keyword: str) -> bool:
     """
     soup = BeautifulSoup(html_content, "html.parser")
     
-    # Check if showtime elements exist
     showtimes = soup.find_all(class_=lambda c: c and any(
         term in c.lower() for term in ["showtime", "show-time", "session-time", "showtime-pill"]
     ))
@@ -92,7 +108,6 @@ def is_specific_movie_available(html_content: str, keyword: str) -> bool:
     if not showtimes:
         return False
 
-    # Check if the specific movie name exists in page text
     page_text = soup.get_text().lower()
     return keyword.lower() in page_text
 
@@ -114,7 +129,6 @@ def run_check_cycle() -> None:
     for target in TARGETS:
         time.sleep(random.uniform(1.5, 3.0))
         try:
-            # allow_redirects=False catches BMS redirects when dates are unreleased
             response = cffi_requests.get(
                 target["url"],
                 headers=headers,
@@ -124,7 +138,6 @@ def run_check_cycle() -> None:
                 timeout=20
             )
 
-            # 301/302 Redirect = Entire date schedule is unreleased
             if response.status_code in [301, 302]:
                 status_msg = (
                     f"🔍 *Check Update:*\n"
@@ -135,7 +148,6 @@ def run_check_cycle() -> None:
                 print(f"[-] {target['movie']} ({target['date']}): Date not released.")
                 continue
 
-            # Check if specific movie has showtimes on this date
             if response.status_code == 200 and is_specific_movie_available(response.text, target["keyword"]):
                 alert_msg = (
                     f"🚨 *BOOKINGS OPEN!* 🚨\n\n"
@@ -167,27 +179,31 @@ def main():
     print("[+] Automated checks scheduled every 10 minutes.")
     print("[+] Listening for '/check' command in Telegram...\n")
 
-    # Run initial check immediately on launch
-    run_check_cycle()
+    # Clear old updates first to prevent infinite execution loop on launch
+    current_offset = flush_old_updates()
 
-    last_update_id = None
+    # Initial boot check
+    run_check_cycle()
     last_auto_check = time.time()
 
     while True:
         try:
-            # 1. Listen for manual Telegram commands (/check, /start, /status)
-            updates = get_telegram_updates(offset=last_update_id)
+            # 1. Listen for manual Telegram commands
+            updates, current_offset = get_telegram_updates(offset=current_offset)
+            
+            trigger_check = False
             for item in updates:
-                last_update_id = item.get("update_id", 0) + 1
-
                 message = item.get("message", {})
                 text = message.get("text", "").strip()
-                
                 if text in ["/check", "/start", "/status"]:
-                    print(f"[!] Command '{text}' received via Telegram.")
-                    send_telegram_message("⏳ Running manual BookMyShow check...")
-                    run_check_cycle()
-                    last_auto_check = time.time()  # Reset 10-minute timer on command check
+                    print(f"[!] Valid command '{text}' received via Telegram.")
+                    trigger_check = True
+
+            # If at least one valid /check command was sent
+            if trigger_check:
+                send_telegram_message("⏳ Running manual BookMyShow check...")
+                run_check_cycle()
+                last_auto_check = time.time()  # Reset 10-minute timer
 
             # 2. Check if 10 minutes have passed since the last check
             if time.time() - last_auto_check >= CHECK_INTERVAL_SECONDS:
@@ -195,7 +211,7 @@ def main():
                 run_check_cycle()
                 last_auto_check = time.time()
 
-            time.sleep(2)  # Short sleep to keep loop efficient
+            time.sleep(2)  # Pauses polling loop to avoid spamming CPU/network
 
         except KeyboardInterrupt:
             print("\n[!] Stopping monitor...")
