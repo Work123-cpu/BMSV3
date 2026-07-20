@@ -18,7 +18,7 @@ def send_telegram_message(message: str) -> dict:
         print("[!] Missing TELEGRAM_TOKEN or TELEGRAM_CHAT_ID.")
         return {}
 
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN.strip()}/sendMessage"
     payload = {
         "chat_id": str(TELEGRAM_CHAT_ID).strip(),
         "text": message,
@@ -35,7 +35,7 @@ def send_telegram_message(message: str) -> dict:
 def get_telegram_updates(offset=None) -> list:
     if not TELEGRAM_TOKEN:
         return []
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates"
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN.strip()}/getUpdates"
     params = {"timeout": 5}
     if offset:
         params["offset"] = offset
@@ -47,11 +47,10 @@ def get_telegram_updates(offset=None) -> list:
         print(f"[!] Telegram update error: {e}")
     return []
 
-# --- DATABASE / STATE MANAGEMENT (Telegram Pinned Message) ---
+# --- DATABASE / STATE MANAGEMENT (Telegram Chat History) ---
 
 def get_db_state() -> dict:
-    """Retrieves targets, wizard state, and last_update_id from pinned message."""
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getChat"
+    """Retrieves targets and state from the latest database message in chat updates."""
     default_state = {
         "targets": [
             {
@@ -67,32 +66,30 @@ def get_db_state() -> dict:
     }
     
     try:
-        res = requests.post(url, data={"chat_id": str(TELEGRAM_CHAT_ID).strip()}, timeout=10)
-        chat_info = res.json()
-        pinned = chat_info.get("result", {}).get("pinned_message", {}).get("text", "")
-        if "=== BMS_BOT_DATABASE ===" in pinned:
-            json_str = pinned.split("```")[1].strip()
-            return json.loads(json_str)
+        updates = get_telegram_updates()
+        # Look for the most recent database message in reverse
+        for item in reversed(updates):
+            msg = item.get("message", {}) or item.get("channel_post", {})
+            text = msg.get("text", "")
+            if "=== BMS_BOT_DATABASE ===" in text:
+                json_str = text.split("```")[1].replace("json", "").strip()
+                parsed_state = json.loads(json_str)
+                # Keep last_update_id updated from updates stream
+                parsed_state["last_update_id"] = max(
+                    parsed_state.get("last_update_id", 0),
+                    item.get("update_id", 0)
+                )
+                return parsed_state
     except Exception as e:
         print(f"[!] Could not read database state: {e}")
 
     return default_state
 
 def save_db_state(db: dict) -> None:
-    """Saves updated database state back to Telegram pinned message."""
+    """Saves updated database state back as a message in Telegram."""
     formatted_json = json.dumps(db, indent=2)
     msg_text = f"=== BMS_BOT_DATABASE ===\n```json\n{formatted_json}\n```"
-    
-    res = send_telegram_message(msg_text)
-    msg_id = res.get("result", {}).get("message_id")
-    
-    if msg_id:
-        pin_url = f"[https://api.telegram.org/bot](https://api.telegram.org/bot){TELEGRAM_TOKEN}/pinChatMessage"
-        payload = {
-            "chat_id": str(TELEGRAM_CHAT_ID).strip(),
-            "message_id": int(msg_id)
-        }
-        requests.post(pin_url, data=payload, timeout=10)
+    send_telegram_message(msg_text)
 
 # --- INTERACTIVE WIZARD & COMMANDS ---
 
@@ -223,7 +220,6 @@ def check_availability() -> None:
     for target in targets:
         time.sleep(random.uniform(1, 3))
         try:
-            # Uses cffi_requests specifically for Cloudflare bypass on BookMyShow
             response = cffi_requests.get(
                 target["url"],
                 headers=headers,
