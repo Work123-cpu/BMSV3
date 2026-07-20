@@ -1,63 +1,70 @@
 import os
-import random
+import sys
 import time
+import random
+import traceback
 import requests
 from curl_cffi import requests as cffi_requests
 from bs4 import BeautifulSoup
 
 # --- CONFIGURATION ---
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
-PROXY_URL = os.environ.get("PROXY_URL")
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
+PROXY_URL = os.environ.get("PROXY_URL", "")
 
 TARGETS = [
-    {"movie": "Jana Nayagan", "date": "2026-07-23", "url": "https://in.bookmyshow.com/cinemas/coimbatore/broadway-cinemas-coimbatore/buytickets/BWCB/20260723", "keyword": "Jana Nayagan"},
-    {"movie": "The Odyssey (IMAX)", "date": "2026-07-30", "url": "https://in.bookmyshow.com/cinemas/coimbatore/broadway-cinemas-coimbatore/buytickets/BWCB/20260730", "keyword": "Odyssey"},
-    {"movie": "The Odyssey (IMAX)", "date": "2026-07-31", "url": "https://in.bookmyshow.com/cinemas/coimbatore/broadway-cinemas-coimbatore/buytickets/BWCB/20260731", "keyword": "Odyssey"}
+    {"movie": "Jana Nayagan", "url": "https://in.bookmyshow.com/cinemas/coimbatore/broadway-cinemas-coimbatore/buytickets/BWCB/20260723", "keyword": "Jana Nayagan"},
+    {"movie": "The Odyssey", "url": "https://in.bookmyshow.com/cinemas/coimbatore/broadway-cinemas-coimbatore/buytickets/BWCB/20260730", "keyword": "Odyssey"},
+    {"movie": "The Odyssey", "url": "https://in.bookmyshow.com/cinemas/coimbatore/broadway-cinemas-coimbatore/buytickets/BWCB/20260731", "keyword": "Odyssey"}
 ]
 
-USER_AGENTS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
-]
-
-def send_telegram_message(message: str):
+def send_telegram(msg):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        print("[!] Telegram credentials missing.")
+        print("Telegram credentials missing!")
         return
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN.strip()}/sendMessage"
-    payload = {"chat_id": TELEGRAM_CHAT_ID.strip(), "text": message, "parse_mode": "Markdown"}
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     try:
-        requests.post(url, json=payload, timeout=10)
+        requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": msg}, timeout=10)
     except Exception as e:
-        print(f"[!] Telegram error: {e}")
+        print(f"Telegram failed: {e}")
 
-def run_check():
-    # Heartbeat to confirm script execution
-    send_telegram_message("🤖 Monitor check started.")
+def run():
+    print("--- Script Starting ---")
     
+    # 1. Test Telegram Connection
+    send_telegram("🚀 Monitor script successfully started.")
+
+    # 2. Check each target
     proxies = {"http": PROXY_URL, "https": PROXY_URL} if PROXY_URL else None
     
     for target in TARGETS:
-        time.sleep(random.uniform(5, 10))
-        headers = {"User-Agent": random.choice(USER_AGENTS)}
-        
+        print(f"Checking: {target['movie']}...")
         try:
-            resp = cffi_requests.get(target["url"], headers=headers, impersonate="chrome124", proxies=proxies, timeout=20)
+            # Using impersonate to bypass cloudflare/403 blocks
+            resp = cffi_requests.get(
+                target["url"], 
+                impersonate="chrome124", 
+                proxies=proxies, 
+                timeout=30
+            )
             
-            if resp.status_code != 200:
-                print(f"[!] Status {resp.status_code} for {target['movie']}")
-                continue
-                
-            soup = BeautifulSoup(resp.text, "html.parser")
-            # If the specific movie keyword is found in the text
-            if target["keyword"].lower() in soup.get_text().lower():
-                send_telegram_message(f"🚨 *FOUND:* {target['movie']}\nLink: {target['url']}")
+            if resp.status_code == 200:
+                if target["keyword"].lower() in resp.text.lower():
+                    send_telegram(f"✅ Tickets found for: {target['movie']}\n{target['url']}")
+                else:
+                    print(f"No showtimes for {target['movie']}.")
             else:
-                print(f"[DEBUG] {target['movie']}: Keyword '{target['keyword']}' not found.")
+                print(f"Request failed for {target['movie']} with status: {resp.status_code}")
                 
         except Exception as e:
-            print(f"[!] Error on {target['movie']}: {e}")
+            print(f"Error checking {target['movie']}: {e}")
+        
+        time.sleep(random.randint(5, 10))
 
 if __name__ == "__main__":
-    run_check()
+    try:
+        run()
+    except Exception:
+        print("CRITICAL CRASH:")
+        print(traceback.format_exc())
+        sys.exit(1)
