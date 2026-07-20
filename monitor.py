@@ -11,6 +11,28 @@ TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 PROXY_URL = os.environ.get("PROXY_URL")
 
+# Static default watchlist strictly for your requested movies
+DEFAULT_TARGETS = [
+    {
+        "movie": "Jana Nayagan",
+        "date": "2026-07-23",
+        "url": "https://in.bookmyshow.com/buytickets/broadway-cinemas-coimbatore/cinema-coim-BWCC-MT/20260723",
+        "keyword": "Jana Nayagan"
+    },
+    {
+        "movie": "The Odyssey (IMAX)",
+        "date": "2026-07-30",
+        "url": "https://in.bookmyshow.com/buytickets/broadway-cinemas-coimbatore/cinema-coim-BWCC-MT/20260730",
+        "keyword": "The Odyssey"
+    },
+    {
+        "movie": "The Odyssey (IMAX)",
+        "date": "2026-07-31",
+        "url": "https://in.bookmyshow.com/buytickets/broadway-cinemas-coimbatore/cinema-coim-BWCC-MT/20260731",
+        "keyword": "The Odyssey"
+    }
+]
+
 # --- TELEGRAM HELPER FUNCTIONS ---
 
 def send_telegram_message(message: str) -> dict:
@@ -47,19 +69,12 @@ def get_telegram_updates(offset=None) -> list:
         print(f"[!] Telegram update error: {e}")
     return []
 
-# --- DATABASE / STATE MANAGEMENT (Telegram Chat History) ---
+# --- DATABASE / STATE MANAGEMENT ---
 
 def get_db_state() -> dict:
-    """Retrieves targets and state from the latest database message in chat updates."""
+    """Retrieves state from Telegram updates or defaults to the specified target list."""
     default_state = {
-        "targets": [
-            {
-                "movie": "Jana Nayagan",
-                "date": "2026-07-24",
-                "url": "https://in.bookmyshow.com/buytickets/broadway-cinemas-coimbatore/cinema-coim-BWCC-MT/20260724",
-                "keyword": "Jana Nayagan"
-            }
-        ],
+        "targets": DEFAULT_TARGETS,
         "wizard_step": None,
         "temp_data": {},
         "last_update_id": 0
@@ -67,14 +82,12 @@ def get_db_state() -> dict:
     
     try:
         updates = get_telegram_updates()
-        # Look for the most recent database message in reverse
         for item in reversed(updates):
             msg = item.get("message", {}) or item.get("channel_post", {})
             text = msg.get("text", "")
             if "=== BMS_BOT_DATABASE ===" in text:
                 json_str = text.split("```")[1].replace("json", "").strip()
                 parsed_state = json.loads(json_str)
-                # Keep last_update_id updated from updates stream
                 parsed_state["last_update_id"] = max(
                     parsed_state.get("last_update_id", 0),
                     item.get("update_id", 0)
@@ -86,12 +99,11 @@ def get_db_state() -> dict:
     return default_state
 
 def save_db_state(db: dict) -> None:
-    """Saves updated database state back as a message in Telegram."""
     formatted_json = json.dumps(db, indent=2)
     msg_text = f"=== BMS_BOT_DATABASE ===\n```json\n{formatted_json}\n```"
     send_telegram_message(msg_text)
 
-# --- INTERACTIVE WIZARD & COMMANDS ---
+# --- COMMAND HANDLING ---
 
 def process_telegram_commands(db: dict) -> dict:
     last_id = db.get("last_update_id", 0)
@@ -101,9 +113,7 @@ def process_telegram_commands(db: dict) -> dict:
         return db
 
     updated = False
-    step = db.get("wizard_step")
-    temp = db.get("temp_data", {})
-    targets = db.get("targets", [])
+    targets = db.get("targets", DEFAULT_TARGETS)
 
     for item in updates:
         update_id = item.get("update_id")
@@ -117,72 +127,16 @@ def process_telegram_commands(db: dict) -> dict:
         if not text:
             continue
 
-        # Cancel command
-        if text.lower() == "/cancel":
-            step = None
-            temp = {}
-            send_telegram_message("🚫 Step-by-step process cancelled.")
-            continue
+        cmd = text.split()[0].lower()
 
-        # Step 0: Initiate /add
-        if text.lower() == "/add" and step is None:
-            step = "WAITING_MOVIE"
-            temp = {}
-            send_telegram_message("🎬 *Step 1/4:* Reply with the *Movie Name* (e.g., `Coolie`):")
-            continue
-
-        # Wizard Steps
-        if step == "WAITING_MOVIE":
-            temp["movie"] = text
-            step = "WAITING_DATE"
-            send_telegram_message("📅 *Step 2/4:* Reply with the *Show Date* (e.g., `2026-08-10`):")
-            continue
-
-        elif step == "WAITING_DATE":
-            temp["date"] = text
-            step = "WAITING_URL"
-            send_telegram_message("🔗 *Step 3/4:* Reply with the *BookMyShow Ticket URL*:")
-            continue
-
-        elif step == "WAITING_URL":
-            clean_url = text.replace("[", "").replace("]", "").split("(")[-1].replace(")", "").strip()
-            temp["url"] = clean_url
-            step = "WAITING_KEYWORD"
-            send_telegram_message("🔑 *Step 4/4:* Reply with the *Search Keyword* (e.g., `Coolie`):")
-            continue
-
-        elif step == "WAITING_KEYWORD":
-            temp["keyword"] = text
-            targets.append(temp.copy())
-            send_telegram_message(f"✅ *Success!* Added *{temp['movie']}* to your watchlist!")
-            step = None
-            temp = {}
-            continue
-
-        # Handle /list
-        if text.lower() == "/list":
-            if not targets:
-                send_telegram_message("📁 *Watchlist is empty.*")
-            else:
-                msg = "🎬 *Current Monitored Movies:*\n\n"
-                for idx, t in enumerate(targets, 1):
-                    msg += f"{idx}. *{t['movie']}* ({t['date']})\n🔗 `{t['url']}`\n\n"
-                send_telegram_message(msg)
-
-        # Handle /del
-        elif text.lower().startswith("/del "):
-            movie_to_del = text[5:].strip().lower()
-            initial_count = len(targets)
-            targets = [t for t in targets if t["movie"].lower() != movie_to_del]
-            if len(targets) < initial_count:
-                send_telegram_message(f"🗑️ Removed *{movie_to_del}* from watchlist!")
-            else:
-                send_telegram_message(f"⚠️ Movie *{movie_to_del}* not found.")
+        # Command /list or /start
+        if cmd in ["/list", "/start", "/movies"]:
+            msg = "🎬 *Monitored Movies Watchlist:*\n\n"
+            for idx, t in enumerate(targets, 1):
+                msg += f"{idx}. *{t['movie']}*\n📅 Date: `{t['date']}`\n📍 Broadway Cinemas, Coimbatore\n\n"
+            send_telegram_message(msg)
 
     db["targets"] = targets
-    db["wizard_step"] = step
-    db["temp_data"] = temp
-
     if updated:
         save_db_state(db)
 
@@ -201,9 +155,9 @@ def check_availability() -> None:
     db = get_db_state()
     db = process_telegram_commands(db)
 
-    targets = db.get("targets", [])
+    targets = db.get("targets", DEFAULT_TARGETS)
     if not targets:
-        print("[!] No active targets to check.")
+        print("[!] No targets found.")
         return
 
     proxies = None
@@ -232,13 +186,14 @@ def check_availability() -> None:
                 msg = (
                     f"🚨 *BOOKINGS OPEN!* 🚨\n\n"
                     f"*Movie:* {target['movie']}\n"
-                    f"*Date:* {target['date']}\n\n"
-                    f"👉 [Book Now]({target['url']})"
+                    f"*Date:* {target['date']}\n"
+                    f"*Location:* Broadway Cinemas, Coimbatore\n\n"
+                    f"👉 [Book Tickets on BookMyShow]({target['url']})"
                 )
                 send_telegram_message(msg)
-                print(f"[+] Bookings open for {target['movie']}!")
+                print(f"[+] Bookings open for {target['movie']} ({target['date']})!")
             else:
-                print(f"[-] No showtimes for {target['movie']}.")
+                print(f"[-] No showtimes for {target['movie']} ({target['date']}).")
 
         except Exception as e:
             print(f"[!] Error checking {target['movie']}: {e}")
