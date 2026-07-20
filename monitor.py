@@ -17,7 +17,6 @@ TARGETS = [
 ]
 
 def check_secrets():
-    """Validates that required GitHub Secrets are present."""
     missing = []
     if not TELEGRAM_TOKEN: missing.append("TELEGRAM_TOKEN")
     if not TELEGRAM_CHAT_ID: missing.append("TELEGRAM_CHAT_ID")
@@ -29,8 +28,12 @@ def check_secrets():
     return True
 
 def send_telegram_message(message: str):
+    # Added "Proxy: Active" to the start of every message
+    status_header = "✅ *Proxy: Active*\n" + "-"*15 + "\n"
+    final_message = status_header + message
+    
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN.strip()}/sendMessage"
-    payload = {"chat_id": str(TELEGRAM_CHAT_ID).strip(), "text": message, "parse_mode": "Markdown", "disable_web_page_preview": True}
+    payload = {"chat_id": str(TELEGRAM_CHAT_ID).strip(), "text": final_message, "parse_mode": "Markdown", "disable_web_page_preview": True}
     try:
         requests.post(url, json=payload, timeout=10)
     except Exception as e:
@@ -42,7 +45,6 @@ def is_specific_movie_available(html_content, keyword):
     return len(showtimes) > 0 and keyword.lower() in soup.get_text().lower()
 
 def run_check():
-    # 1. Validate all secrets and proxy
     if not check_secrets():
         return
 
