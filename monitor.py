@@ -56,14 +56,15 @@ def run_check():
         try:
             resp = cffi_requests.get(target["url"], headers=headers, impersonate="chrome124", proxies=proxies, allow_redirects=False, timeout=20)
             
+            # Updated the messages below to include the URL
             if resp.status_code in [301, 302]:
-                send_telegram_message(f"🔍 *{target['movie']}* ({target['date']}) — Date NOT released by BMS yet.")
+                send_telegram_message(f"🔍 *{target['movie']}* ({target['date']}) — Date NOT released by BMS yet.\n🔗 {target['url']}")
             elif resp.status_code == 200 and is_specific_movie_available(resp.text, target["keyword"]):
                 send_telegram_message(f"🚨 *BOOKINGS OPEN!* 🚨\n\n*Movie:* {target['movie']}\n*Date:* {target['date']}\n👉 [Book Now]({target['url']})")
             else:
-                send_telegram_message(f"🔍 *{target['movie']}* ({target['date']}) — Page live, but {target['movie']} showtimes not added yet.")
+                send_telegram_message(f"🔍 *{target['movie']}* ({target['date']}) — Page live, but {target['movie']} showtimes not added yet.\n🔗 {target['url']}")
         except Exception as e:
-            send_telegram_message(f"⚠️ *Error checking {target['movie']}:* {e}")
+            send_telegram_message(f"⚠️ *Error checking {target['movie']}:* {e}\n🔗 {target['url']}")
 
 if __name__ == "__main__":
     run_check()
