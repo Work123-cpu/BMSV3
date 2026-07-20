@@ -47,6 +47,8 @@ def is_specific_movie_available(html_content, keyword):
 def run_check():
     if not check_secrets():
         return
+    
+    print(f"[DEBUG] Starting check for {len(TARGETS)} targets.") # ADD THIS LINE
 
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124.0.0.0 Safari/537.36"}
     proxies = {"http": PROXY_URL, "https": PROXY_URL}
