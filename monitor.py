@@ -18,64 +18,46 @@ TARGETS = [
 
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
 ]
 
 def send_telegram_message(message: str):
+    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+        print("[!] Telegram credentials missing.")
+        return
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN.strip()}/sendMessage"
-    payload = {
-        "chat_id": str(TELEGRAM_CHAT_ID).strip(), 
-        "text": f"✅ *Proxy: Active*\n{'-'*15}\n{message}", 
-        "parse_mode": "Markdown", 
-        "disable_web_page_preview": True
-    }
+    payload = {"chat_id": TELEGRAM_CHAT_ID.strip(), "text": message, "parse_mode": "Markdown"}
     try:
-        requests.post(url, json=payload, timeout=15)
+        requests.post(url, json=payload, timeout=10)
     except Exception as e:
         print(f"[!] Telegram error: {e}")
 
-def is_specific_movie_available(html_content, keyword):
-    soup = BeautifulSoup(html_content, "html.parser")
-    # Search for showtime-related elements
-    showtimes = soup.find_all(lambda tag: tag.name in ['div', 'a'] and tag.get('class') and any('showtime' in c.lower() for c in tag['class']))
-    return len(showtimes) > 0 and keyword.lower() in soup.get_text().lower()
-
 def run_check():
-    if not all([TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, PROXY_URL]):
-        print("[!] Missing environment variables.")
-        return
+    # Heartbeat to confirm script execution
+    send_telegram_message("🤖 Monitor check started.")
     
-    proxies = {"http": PROXY_URL, "https": PROXY_URL}
+    proxies = {"http": PROXY_URL, "https": PROXY_URL} if PROXY_URL else None
     
     for target in TARGETS:
-        # Increased wait time to prevent 403 blocks
-        time.sleep(random.uniform(15, 30))
-        
+        time.sleep(random.uniform(5, 10))
         headers = {"User-Agent": random.choice(USER_AGENTS)}
         
         try:
-            resp = cffi_requests.get(
-                target["url"], 
-                headers=headers, 
-                impersonate="chrome124", 
-                proxies=proxies, 
-                timeout=30
-            )
+            resp = cffi_requests.get(target["url"], headers=headers, impersonate="chrome124", proxies=proxies, timeout=20)
             
-            if resp.status_code == 403:
-                print(f"[!] Access Forbidden (403) for {target['movie']}. Proxy may be flagged.")
-            elif resp.status_code == 200:
-                if is_specific_movie_available(resp.text, target["keyword"]):
-                    send_telegram_message(f"🚨 *BOOKINGS OPEN!* 🚨\n\n*Movie:* {target['movie']}\n👉 [Book Now]({target['url']})")
-                else:
-                    print(f"[DEBUG] Page live for {target['movie']}, but showtimes not yet released.")
+            if resp.status_code != 200:
+                print(f"[!] Status {resp.status_code} for {target['movie']}")
+                continue
+                
+            soup = BeautifulSoup(resp.text, "html.parser")
+            # If the specific movie keyword is found in the text
+            if target["keyword"].lower() in soup.get_text().lower():
+                send_telegram_message(f"🚨 *FOUND:* {target['movie']}\nLink: {target['url']}")
             else:
-                print(f"[!] Received status {resp.status_code} for {target['movie']}")
+                print(f"[DEBUG] {target['movie']}: Keyword '{target['keyword']}' not found.")
                 
         except Exception as e:
-            error_msg = f"⚠️ *Error checking {target['movie']}:*\n`{str(e)}`"
-            send_telegram_message(error_msg)
+            print(f"[!] Error on {target['movie']}: {e}")
 
 if __name__ == "__main__":
     run_check()
