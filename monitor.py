@@ -1,11 +1,12 @@
 import os
-import requests
-from bs4 import BeautifulSoup
+import time
+import random
+from datetime import datetime
+import cloudscraper
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
-# Target movies and show dates at Broadway Cinemas, Coimbatore
 TARGETS = [
     {
         "movie": "Jana Nayagan",
@@ -21,35 +22,79 @@ TARGETS = [
     }
 ]
 
-def send_telegram_alert(message):
+def send_telegram_message(message):
+    """Utility function to push any log or alert to Telegram."""
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        print("Telegram credentials missing!")
+        print("[!] Missing TELEGRAM_TOKEN or TELEGRAM_CHAT_ID environment variables.")
         return
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"}
-    requests.post(url, data=payload)
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": message,
+        "parse_mode": "Markdown",
+        "disable_web_page_preview": True
+    }
+    try:
+        requests_response = cloudscraper.create_scraper().post(url, data=payload, timeout=10)
+        if requests_response.status_code != 200:
+            print(f"[!] Telegram API error: {requests_response.status_code}")
+    except Exception as e:
+        print(f"[!] Failed to send Telegram message: {e}")
 
 def check_availability():
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    }
+    scraper = cloudscraper.create_scraper(
+        browser={'browser': 'chrome', 'platform': 'windows', 'mobile': False}
+    )
+
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S UTC")
+    print(f"--- Running BookMyShow Check at {now} ---")
+
+    status_summary = []
+
     for target in TARGETS:
+        # Add random jitter (3 to 8 seconds delay) to prevent predictable traffic patterns
+        time.sleep(random.uniform(3, 8))
+
         try:
-            response = requests.get(target["url"], headers=headers, timeout=15)
+            response = scraper.get(target["url"], timeout=15)
+            
             if response.status_code == 200:
-                soup = BeautifulSoup(response.text, "html.parser")
-                page_text = soup.get_text()
+                page_text = response.text
                 
                 if target["keyword"].lower() in page_text.lower():
-                    msg = f"🚨 *BOOKINGS OPEN!* 🚨\n\n*Movie:* {target['movie']}\n*Date:* {target['date']}\n*Venue:* Broadway Cinemas, Coimbatore\n\n👉 [Book Now]({target['url']})"
-                    print(f"Match found for {target['movie']}!")
-                    send_telegram_alert(msg)
+                    # 🚨 HIGH PRIORITY: Tickets found!
+                    alert_msg = (
+                        f"🚨 *BOOKINGS OPEN!* 🚨\n\n"
+                        f"*Movie:* {target['movie']}\n"
+                        f"*Date:* {target['date']}\n"
+                        f"*Venue:* Broadway Cinemas, Coimbatore\n\n"
+                        f"👉 [Book Now]({target['url']})"
+                    )
+                    send_telegram_message(alert_msg)
+                    status_summary.append(f"✅ {target['movie']}: OPEN!")
                 else:
-                    print(f"Not open yet: {target['movie']} ({target['date']})")
+                    print(f"[-] {target['movie']} not open yet.")
+                    status_summary.append(f"⏳ {target['movie']}: Not open")
+
+            elif response.status_code in [403, 429, 503]:
+                # ⚠️ WARNING: Blocked or rate-limited by Cloudflare
+                err_msg = f"⚠️ *Rate Limit / Block Detected!* HTTP {response.status_code} for {target['movie']}."
+                print(err_msg)
+                send_telegram_message(err_msg)
+                status_summary.append(f"❌ {target['movie']}: Blocked ({response.status_code})")
             else:
-                print(f"Failed to fetch page for {target['movie']}, HTTP status: {response.status_code}")
+                print(f"[!] Unexpected status code {response.status_code} for {target['movie']}")
+                status_summary.append(f"⚠️ {target['movie']}: HTTP {response.status_code}")
+
         except Exception as e:
-            print(f"Error checking {target['movie']}: {e}")
+            err_msg = f"❌ *Error checking {target['movie']}:* `{str(e)}`"
+            print(err_msg)
+            send_telegram_message(err_msg)
+            status_summary.append(f"❌ {target['movie']}: Exception occurred")
+
+    # Optional: Send a summary heart-beat log once every few hours or at specific times (e.g. 09:00 UTC)
+    # If you want a message on EVERY run, uncomment the line below:
+    # send_telegram_message(f"ℹ️ *Status Check ({now}):*\n" + "\n".join(status_summary))
 
 if __name__ == "__main__":
     check_availability()
