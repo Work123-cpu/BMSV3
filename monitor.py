@@ -2,8 +2,8 @@ import os
 import json
 import time
 import random
-from datetime import datetime
-from curl_cffi import requests
+import requests  # Standard requests for Telegram API
+from curl_cffi import requests as cffi_requests  # cffi requests strictly for scraping
 from bs4 import BeautifulSoup
 
 # Secrets from environment variables
@@ -20,7 +20,7 @@ def send_telegram_message(message: str) -> dict:
 
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
+        "chat_id": str(TELEGRAM_CHAT_ID).strip(),
         "text": message,
         "parse_mode": "Markdown",
         "disable_web_page_preview": True
@@ -67,7 +67,7 @@ def get_db_state() -> dict:
     }
     
     try:
-        res = requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID}, timeout=10)
+        res = requests.post(url, data={"chat_id": str(TELEGRAM_CHAT_ID).strip()}, timeout=10)
         chat_info = res.json()
         pinned = chat_info.get("result", {}).get("pinned_message", {}).get("text", "")
         if "=== BMS_BOT_DATABASE ===" in pinned:
@@ -88,7 +88,11 @@ def save_db_state(db: dict) -> None:
     
     if msg_id:
         pin_url = f"[https://api.telegram.org/bot](https://api.telegram.org/bot){TELEGRAM_TOKEN}/pinChatMessage"
-        requests.post(pin_url, data={"chat_id": TELEGRAM_CHAT_ID, "message_id": msg_id}, timeout=10)
+        payload = {
+            "chat_id": str(TELEGRAM_CHAT_ID).strip(),
+            "message_id": int(msg_id)
+        }
+        requests.post(pin_url, data=payload, timeout=10)
 
 # --- INTERACTIVE WIZARD & COMMANDS ---
 
@@ -144,7 +148,7 @@ def process_telegram_commands(db: dict) -> dict:
             continue
 
         elif step == "WAITING_URL":
-            clean_url = text.replace("[", "").replace("]", "").split("(")[-1].replace(")", "")
+            clean_url = text.replace("[", "").replace("]", "").split("(")[-1].replace(")", "").strip()
             temp["url"] = clean_url
             step = "WAITING_KEYWORD"
             send_telegram_message("🔑 *Step 4/4:* Reply with the *Search Keyword* (e.g., `Coolie`):")
@@ -219,7 +223,8 @@ def check_availability() -> None:
     for target in targets:
         time.sleep(random.uniform(1, 3))
         try:
-            response = requests.get(
+            # Uses cffi_requests specifically for Cloudflare bypass on BookMyShow
+            response = cffi_requests.get(
                 target["url"],
                 headers=headers,
                 impersonate="chrome124",
