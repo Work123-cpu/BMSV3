@@ -36,17 +36,10 @@ TARGETS = [
     }
 ]
 
-# Inline Keyboard Button Markup attached to all status updates
-CHECK_NOW_KEYBOARD = {
-    "inline_keyboard": [
-        [{"text": "🔄 Check Now", "callback_data": "check_now"}]
-    ]
-}
-
 # --- TELEGRAM BOT HELPERS ---
 
-def send_telegram_message(message: str, include_button: bool = True) -> dict:
-    """Sends a formatted message to Telegram Chat with an optional 'Check Now' button."""
+def send_telegram_message(message: str) -> dict:
+    """Sends a formatted Markdown message to Telegram Chat."""
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
         print("[!] Error: Missing TELEGRAM_TOKEN or TELEGRAM_CHAT_ID environment variables.")
         return {}
@@ -58,8 +51,6 @@ def send_telegram_message(message: str, include_button: bool = True) -> dict:
         "parse_mode": "Markdown",
         "disable_web_page_preview": True
     }
-    if include_button:
-        payload["reply_markup"] = CHECK_NOW_KEYBOARD
 
     try:
         res = requests.post(url, json=payload, timeout=10)
@@ -68,18 +59,8 @@ def send_telegram_message(message: str, include_button: bool = True) -> dict:
         print(f"[!] Telegram send error: {e}")
         return {}
 
-def answer_callback_query(callback_query_id: str, text: str = "Checking BookMyShow now...") -> None:
-    """Acknowledges button press instantly to remove the loading spinner in Telegram."""
-    if not TELEGRAM_TOKEN:
-        return
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN.strip()}/answerCallbackQuery"
-    try:
-        requests.post(url, json={"callback_query_id": callback_query_id, "text": text}, timeout=5)
-    except Exception as e:
-        print(f"[!] Error answering callback query: {e}")
-
 def get_telegram_updates(offset: int = None) -> list:
-    """Polls Telegram for incoming button presses or commands."""
+    """Polls Telegram for incoming slash commands (e.g., /check)."""
     if not TELEGRAM_TOKEN:
         return []
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN.strip()}/getUpdates"
@@ -184,7 +165,7 @@ def run_check_cycle() -> None:
 def main():
     print("[+] Monitor active in Continuous Mode.")
     print("[+] Automated checks scheduled every 10 minutes.")
-    print("[+] Listening for 'Check Now' button taps in Telegram...\n")
+    print("[+] Listening for '/check' command in Telegram...\n")
 
     # Run initial check immediately on launch
     run_check_cycle()
@@ -194,30 +175,19 @@ def main():
 
     while True:
         try:
-            # 1. Listen for manual Telegram 'Check Now' button presses
+            # 1. Listen for manual Telegram commands (/check, /start, /status)
             updates = get_telegram_updates(offset=last_update_id)
             for item in updates:
                 last_update_id = item.get("update_id", 0) + 1
-                
-                # Check for callback queries (button clicks)
-                callback_query = item.get("callback_query")
-                if callback_query:
-                    query_id = callback_query.get("id")
-                    data = callback_query.get("data")
-                    
-                    if data == "check_now":
-                        answer_callback_query(query_id, "🔍 Triggering manual check now...")
-                        print("[!] Manual check triggered via Telegram button.")
-                        run_check_cycle()
-                        last_auto_check = time.time()  # Reset 10-min timer on manual check
 
-                # Check for direct commands (/check, /start, /status)
                 message = item.get("message", {})
                 text = message.get("text", "").strip()
+                
                 if text in ["/check", "/start", "/status"]:
-                    print("[!] Manual check triggered via Telegram command.")
+                    print(f"[!] Command '{text}' received via Telegram.")
+                    send_telegram_message("⏳ Running manual BookMyShow check...")
                     run_check_cycle()
-                    last_auto_check = time.time()  # Reset 10-min timer on manual check
+                    last_auto_check = time.time()  # Reset 10-minute timer on command check
 
             # 2. Check if 10 minutes have passed since the last check
             if time.time() - last_auto_check >= CHECK_INTERVAL_SECONDS:
