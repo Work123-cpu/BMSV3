@@ -1,9 +1,9 @@
 name: BookMyShow Ticket Monitor
 
 on:
-  schedule:
-    - cron: '*/10 * * * *'
-  workflow_dispatch:
+  repository_dispatch:
+    types: [run-monitor] # Triggered by cron-job.org
+  workflow_dispatch:      # Kept for manual testing
 
 jobs:
   check-tickets:
